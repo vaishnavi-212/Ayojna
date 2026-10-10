@@ -23,6 +23,7 @@ from ayojna.planner.optimizer import (
     expected_ios,
     load_planner_config,
     plan,
+    with_knobs,
 )
 from ayojna.policy.guard import allowed_tiers
 from ayojna.twin.sim import Twin
@@ -78,7 +79,11 @@ def live_plan(
     since: np.ndarray,
     envelope: Envelope,
     guards: dict | None = None,
+    knobs: dict | None = None,
+    info: dict | None = None,
 ) -> tuple[MovePlan, dict[str, str], dict[str, dict]]:
+    """knobs: per-extent aggressiveness from a promoted bandit; info: filled with the solver
+    report (which solver ran, optimal or not, objective vs the greedy plan, ms)."""
     cfg = load_planner_config()
     hour, H = int(preds["hour"].max()), cfg["horizon_hours"]
     exp, rgb, conf, pred = expected_load(twin, preds, feats, cfg["abstain_below"])
@@ -86,8 +91,12 @@ def live_plan(
     allowed, guard_note = apply_guards(allowed, current, twin.volumes, guards or NONE)
     eco = TierEconomics.from_twin(twin)
     held = hour - since
-    choice = plan(exp, rgb, twin.sla_target_ms, current, held, allowed, conf, eco, cfg)
-    parts = cost_breakdown(exp, rgb, twin.sla_target_ms, current, held, eco, cfg)
+    solver: dict = {}
+    choice = plan(exp, rgb, twin.sla_target_ms, current, held, allowed, conf, eco, cfg,
+                  knobs=knobs, info=solver)  # fmt: skip
+    if info is not None:
+        info.update(solver)
+    parts = cost_breakdown(exp, rgb, twin.sla_target_ms, current, held, eco, with_knobs(cfg, knobs))
     run_cost = parts["storage"] + parts["retrieval"] + parts["sla_risk"]  # per 24 h, no move
     per_month = twin.hours_per_month / H
     never = {"p_hot": 0, "p_warm": 0, "p_cold": 1, "label": "cold", "confidence": 1.0,
@@ -148,6 +157,7 @@ def live_plan(
                 "why_not_cheaper": (
                     "protects the latency SLA" if t < c else "cheapest allowed tier over 24 h"
                 ),
+                "solver": solver.get("solver", "greedy"),
             },
         }
     moves.sort(key=lambda m: -m.expected_saving_per_month)

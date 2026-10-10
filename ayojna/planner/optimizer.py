@@ -6,6 +6,10 @@ Expected cost of extent i on tier t over the next H hours:
 Then: capacity limits on hot and warm (demote the extents that lose least), queue relief
 (keep each tier's load inside its SLA, without overfilling faster tiers or churning), and
 a migration budget (keep the moves with the biggest benefit).
+
+That greedy plan is always computed. With `solver: auto | ortools | highs` (planner.yaml) the
+same costs and limits are then solved EXACTLY as one optimisation problem (planner/exact.py);
+the greedy plan stays as the fallback and as the yardstick the exact plan is compared with.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import numpy as np
 import yaml
 
 from ayojna.contracts import EXTENT_MB
+from ayojna.planner import exact
 from ayojna.settings import CONFIG_DIR
 
 GB = EXTENT_MB / 1024
@@ -50,6 +55,17 @@ class TierEconomics:
             twin.hours_per_month,
             twin.ios_capacity,
         )
+
+
+def with_knobs(cfg: dict, knobs: dict | None) -> dict:
+    """Per-extent aggressiveness from the bandit: scales hysteresis, sets the amortization."""
+    if not knobs:
+        return cfg
+    return {
+        **cfg,
+        "hysteresis_usd": cfg["hysteresis_usd"] * np.asarray(knobs["hysteresis_x"], dtype=float),
+        "move_amortization_hours": np.asarray(knobs["amortization_hours"], dtype=float),
+    }
 
 
 def expected_ios(p_hot, p_warm, rate: dict, acc_24h) -> np.ndarray:
@@ -136,7 +152,10 @@ def plan(
     confident: np.ndarray,  # False = abstain: stay put
     eco: TierEconomics,
     cfg: dict,
+    knobs: dict | None = None,  # per-extent aggressiveness chosen by the bandit
+    info: dict | None = None,  # filled with the solver report (which solver, objective, ms)
 ) -> np.ndarray:
+    cfg = with_knobs(cfg, knobs)
     n = len(current)
     rows = np.arange(n)
     parts = cost_breakdown(expected_ios, read_gb_per_io, sla_ms, current, held_hours, eco, cfg)
@@ -171,4 +190,18 @@ def plan(
         keep = moving[np.argsort(-benefit)[:budget]]
         revert = np.setdiff1d(moving, keep)
         choice[revert] = current[revert]
+    if cfg.get("solver", "greedy") != "greedy":
+        exact_choice, meta = exact.solve(
+            cost, ok, expected_ios, sla_ms, current, eco, cfg, budget,
+            cfg["solver"], cfg.get("solver_time_limit_s", 5.0),
+        )  # fmt: skip
+        if exact_choice is not None:
+            meta["greedy_objective"] = round(
+                exact.objective(choice, cost, expected_ios, sla_ms, eco, cfg), 6
+            )
+            choice = exact_choice
+        if info is not None:
+            info.update(meta)
+    elif info is not None:
+        info.update({"solver": "greedy", "status": "configured"})
     return choice

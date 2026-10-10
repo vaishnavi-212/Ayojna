@@ -25,6 +25,8 @@ from ayojna.models.anomaly import detect
 from ayojna.models.features import build_features, load_label_config
 from ayojna.models.forecast import forecast_volumes
 from ayojna.models.predictor import predict_hotness
+from ayojna.models.series import volume_hourly
+from ayojna.planner import bandit
 from ayojna.planner.guards import guards_from
 from ayojna.planner.live import live_plan
 from ayojna.planner.optimizer import load_planner_config
@@ -145,14 +147,29 @@ def build_steps(
         current, since = catalog.placement(twin.volumes, twin.extent_ids)
         guards = guards_from(ctx.get("forecast"), ctx.get("anomaly"))
         intel_report(ctx, guards)
+        rl, knobs = rl_policy(ctx["load"], twin), None
+        if rl.get("promoted"):  # only a bandit that beat the static settings may steer
+            knobs = bandit.knobs_for(rl["suggested"], twin.volumes, load_planner_config()["bandit"]["arms"])
+        solver: dict = {}
         mp, why, cards = live_plan(
-            twin, preds, ctx["features"], current, since, envelope(ctx), guards
+            twin, preds, ctx["features"], current, since, envelope(ctx), guards, knobs, solver
         )
         _write_json(
             state.root / "last_plan.json",
-            {"plan": mp.model_dump(mode="json"), "why": why, "cards": cards},
-        )
+            {"plan": mp.model_dump(mode="json"), "why": why, "cards": cards,
+             "decision": {"solver": solver, "bandit": rl}},
+        )  # fmt: skip
         return mp
+
+    def rl_policy(eh, twin) -> dict:
+        try:
+            vh = volume_hourly(eh)
+            frozen = {v for v in set(twin.volumes) if twin.legal_hold[twin.volumes == v].any()}
+            io = {v: g["io"].to_numpy(dtype=float) for v, g in vh.groupby("volume") if v not in frozen}
+            sla = {v: float(twin.sla_target_ms[twin.volumes == v].min()) for v in io}
+            return bandit.live_policy(model_store, io, sla)
+        except Exception as exc:  # a broken bandit file never blocks planning
+            return {"available": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def plan_fallback(ctx):  # hold: no moves is always safe
         env = envelope(ctx, Status.DEGRADED, Source.FALLBACK)

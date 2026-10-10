@@ -6,3 +6,17 @@ move_amortization_hours: 168  # a move is paid back over a week of expected resi
 abstain_below: 0.6         # below this confidence the extent stays where it is
 max_gb_moved_per_hour: 50  # migration budget
 queue_headroom: 0.7        # keep each tier's expected load under 70% of its SLA-safe limit
+
+# Exact placement (slide 4: "OR-Tools optimizer"). The greedy plan is always the fallback.
+solver: auto               # auto (OR-Tools CP-SAT, else HiGHS from SciPy) | ortools | highs | greedy
+solver_time_limit_s: 5
+
+# Contextual bandit (slide 4: "RL tunes how aggressively to move"). Learns per volume.
+bandit:
+  enabled: true
+  alpha: 0.6                 # exploration bonus (LinUCB)
+  reward_window_hours: 24    # a decision is scored after 24 h of real traffic
+  arms:                      # how eager the optimizer is to move this volume's data
+    cautious:   {hysteresis_x: 4.0,  amortization_hours: 336}
+    balanced:   {hysteresis_x: 1.0,  amortization_hours: 168}
+    aggressive: {hysteresis_x: 0.25, amortization_hours: 72}

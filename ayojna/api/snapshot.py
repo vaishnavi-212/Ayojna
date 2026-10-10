@@ -16,12 +16,15 @@ from ayojna.planner.evaluate import race_all
 
 
 def snapshot(eh_path: str, features_path: str, store: str, out: str) -> dict:
-    scored, summary, note = race_all(read_table(eh_path), read_table(features_path), store)
+    scored, summary, note = race_all(
+        read_table(eh_path), read_table(features_path), store, save_bandit=True
+    )
     cum = scored.pivot(index="hour", columns="strategy", values="cost").cumsum()
     board = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "predictions": note,
         "guards": summary.attrs.get("guards", {}),
+        "decision": summary.attrs.get("decision", {}),
         "scored_hours": [int(scored["hour"].min()), int(scored["hour"].max())],
         "summary": summary.round(4).reset_index().to_dict(orient="records"),
         "cumulative_cost": {
@@ -48,4 +51,10 @@ if __name__ == "__main__":
             f"saving {row['saving_vs_all_hot_pct']:>5.1f}%  SLA {row['sla_met_pct']:.2f}%"
         )
     print(f"guards in the replay: {b['guards']}")
+    d = b["decision"]
+    print(f"solver: {d['solver']['used']}, Ayojna driven by {d['driven_by']}")
+    if "bandit" in d:
+        v = d["bandit"]["validation"]
+        print(f"bandit validation cost: static {v['static']['cost']} vs bandit {v['bandit']['cost']}"
+              f" -> {'PROMOTED' if d['bandit']['promoted'] else 'shadow mode'}")  # fmt: skip
     print(f"-> {a.out}")
