@@ -55,6 +55,7 @@ def _run_step(step: Step, ctx: dict) -> tuple[Any, dict]:
     """Primary with retries, then fallback. Never raises. Returns (output, info)."""
     t0 = time.perf_counter()
     source, note, out = "primary", "", None
+    primary_failed = False
     for attempt in range(step.retries + 1):
         try:
             out = _call(step.fn, ctx, step.timeout_s)
@@ -64,6 +65,7 @@ def _run_step(step: Step, ctx: dict) -> tuple[Any, dict]:
             if attempt < step.retries:
                 time.sleep(0.2 * 2**attempt)
     else:
+        primary_failed, primary_error = True, note
         if step.fallback is not None:
             try:
                 out, source = _call(step.fallback, ctx, step.timeout_s), "fallback"
@@ -73,7 +75,10 @@ def _run_step(step: Step, ctx: dict) -> tuple[Any, dict]:
             source = "failed"
     if isinstance(out, Degraded):
         out, source, note = out.output, "fallback", out.note
-    return out, {"source": source, "note": note, "ms": round(1000 * (time.perf_counter() - t0))}
+    info = {"source": source, "note": note, "ms": round(1000 * (time.perf_counter() - t0))}
+    if primary_failed:
+        info["attempts"], info["error"] = step.retries + 1, primary_error
+    return out, info
 
 
 def run_cycle(run_id: str, steps: list, store: StateStore, token: int) -> dict:
@@ -111,6 +116,10 @@ def run_cycle(run_id: str, steps: list, store: StateStore, token: int) -> dict:
         hold = False
         for step, (out, info) in zip(todo, results):
             store.audit({"run_id": run_id, "token": token, "step": step.name, **info})
+            if "attempts" in info:  # the primary failed every retry: keep it for a person
+                store.dead_letter({"kind": "step", "run_id": run_id, "token": token,
+                                   "step": step.name, "error": info["error"],
+                                   "attempts": info["attempts"], "handled_by": info["source"]})  # fmt: skip
             report["steps"][step.name] = info
             if info["source"] == "failed":
                 hold = hold or step.critical

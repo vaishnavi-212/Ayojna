@@ -72,11 +72,12 @@ def build_steps(
     corrupt_first_move: bool = False,
     crash_after_moves: int | None = None,
     approval_mode: bool = False,
+    store: StateStore | None = None,
 ) -> list:
     faults = faults or {}
     mcfg = load_label_config()
     labels, fc, an = mcfg["labels"], mcfg["forecast"], mcfg["anomaly"]
-    state = StateStore(state_dir)
+    state = store or StateStore(state_dir)  # the run's store (file or Redis): same fencing
     catalog_path = state.root / "catalog.json"
 
     def load(ctx):
@@ -182,8 +183,10 @@ def build_steps(
         # a replica resuming this run re-stamps the plan with ITS token (fencing)
         env = mp.envelope.model_copy(update={"fencing_token": ctx["token"]})
         mp = mp.model_copy(update={"envelope": env})
-        if recommend_only:
-            report = {"run_id": ctx["run_id"], "mode": "recommend-only", "results": []}
+        safe = state.safe_mode()  # operator kill switch: L4, read-only
+        if recommend_only or safe:
+            mode = "safe-mode" if safe else "recommend-only"
+            report = {"run_id": ctx["run_id"], "mode": mode, "results": [], "safe_mode": safe}
         else:
             ex = Executor(
                 make_store(store_kind, tiers_root),
@@ -199,6 +202,9 @@ def build_steps(
                 decide = lambda m: decision_for(approvals, m.group_key())  # noqa: E731
             report = ex.execute(mp, state.is_current, decide)
             report["mode"] = "approval" if approval_mode else "executed"
+            for r in report["results"]:
+                if r["status"] == "rolled_back":  # a move that failed verification
+                    state.dead_letter({"kind": "move", "run_id": ctx["run_id"], **r})
         _write_json(state.root / "last_exec.json", report)
         return report
 
