@@ -13,3 +13,5 @@ strategies:
     cold_after_idle_hours: 72
   access_timer:                # cloud-style auto-tiering: hot <-> warm on an idle timer
     idle_hours: 24
+  lfu:                         # most frequently used (over a sliding window) fill hot, then warm
+    window_hours: 72

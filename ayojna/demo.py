@@ -59,7 +59,7 @@ def results_table() -> str:
 
 def main(a) -> None:
     t0 = time.time()
-    print(f"== 1/6 ingest ({a.source}) ==")
+    print(f"== 1/7 ingest ({a.source}) ==")
     if a.source == "lake":
         if not (REPO_ROOT / EH).exists():
             sys.exit(f"{EH} not found: run with --source real or synth first")
@@ -77,21 +77,21 @@ def main(a) -> None:
             *(["--volumes", *a.volumes] if a.volumes else []),
         )
 
-    print("\n== 2/6 features ==")
+    print("\n== 2/7 features ==")
     run("ayojna.models.build_features", "--inp", EH, "--out", FEATS)
 
-    print("\n== 3/6 intelligence layer: hotness model zoo + forecast + anomaly ==")
+    print("\n== 3/7 intelligence layer: hotness model zoo + forecast + anomaly ==")
     if not run("ayojna.models.train_all", "--eh", EH, "--features", FEATS, "--store", STORE,
                "--report", f"{LAKE}/intel_report.json", check=False):  # fmt: skip
         (REPO_ROOT / STORE / "hotness-latest.json").unlink(missing_ok=True)
         print("model not trained on this data -> the supervisor will use the rule fallback (L1)")
 
-    print("\n== 4/6 scoreboard (digital twin race) ==")
+    print("\n== 4/7 scoreboard (digital twin race) ==")
     run("ayojna.api.snapshot", "--eh", EH, "--features", FEATS, "--store", STORE)
     table = results_table()
     (DATA_DIR / "lake" / "results.md").write_text(table + "\n", encoding="utf-8")
 
-    print("\n== 5/6 supervisor (fresh state) ==")
+    print("\n== 5/7 supervisor (fresh state) ==")
     for d in ("state", "tiers"):
         shutil.rmtree(DATA_DIR / d, ignore_errors=True)
     run(
@@ -108,7 +108,11 @@ def main(a) -> None:
         STORE,
     )
 
-    print(f"\n== 6/6 results ({time.time() - t0:.0f}s) ==\n\n{table}\n")
+    print("\n== 6/7 validate: fault-injection drill + slide 6 scorecard ==")
+    run("ayojna.validate.chaos", "--cycles", "12", "--eh", EH, "--features", FEATS, "--store", STORE)
+    run("ayojna.validate.kpi_report", "--eh", EH, "--features", FEATS, "--store", STORE)
+
+    print(f"\n== 7/7 results ({time.time() - t0:.0f}s) ==\n\n{table}\n")
     print("saved to data/lake/results.md")
     if a.serve:
         print("\ndashboard: http://localhost:8000   (Ctrl+C to stop)")

@@ -85,3 +85,50 @@ class LruCapacity:
         tiers[order[n_hot : n_hot + n_warm]] = WARM
         tiers[last < 0] = np.where(view.placement[last < 0] == HOT, COLD, view.placement[last < 0])
         return tiers
+
+
+class LfuCapacity:
+    """Most FREQUENTLY used extents (I/Os in a sliding window) fill hot, then warm; rest cold.
+
+    The window keeps it from clinging to data that was busy long ago (LFU with ageing).
+    Ties are broken by recency, like LRU.
+    """
+
+    name = "lfu"
+
+    def __init__(self, window_hours: int = 72):
+        self.window = window_hours
+
+    def decide(self, view: TwinView) -> np.ndarray:
+        if view.hour == 0:
+            return view.placement
+        freq = view.ios_past[-self.window :].sum(axis=0)
+        last = last_access_hour(view)
+        order = np.lexsort((-last, -freq))  # most I/Os first, then most recent
+        tiers = np.full(view.placement.shape, COLD)
+        n_hot, n_warm = view.capacity_extents[HOT], view.capacity_extents[WARM]
+        tiers[order[:n_hot]] = HOT
+        tiers[order[n_hot : n_hot + n_warm]] = WARM
+        tiers[last < 0] = np.where(view.placement[last < 0] == HOT, COLD, view.placement[last < 0])
+        return tiers
+
+
+class PolicyAware:
+    """Any baseline made compliant: each choice snaps to the nearest tier the policy allows.
+
+    Rules that ignore policy look cheaper by breaking it (moving legal-hold data, archiving
+    PII). Wrapping them in the same policy guard Ayojna uses gives the fair comparison.
+    """
+
+    def __init__(self, inner):
+        self.inner, self.name = inner, f"{inner.name}+policy"
+
+    def decide(self, view: TwinView) -> np.ndarray:
+        from ayojna.policy.guard import allowed_tiers  # here: the twin does not need policy
+
+        want = np.asarray(self.inner.decide(view))
+        ok, _ = allowed_tiers(view.volumes, view.placement)
+        tiers = np.arange(ok.shape[1])
+        # distance to the wanted tier; forbidden tiers never win; ties go to the faster tier
+        dist = np.abs(tiers[None, :] - want[:, None]) + np.where(ok, 0, 99) + tiers[None, :] * 1e-3
+        return dist.argmin(axis=1)

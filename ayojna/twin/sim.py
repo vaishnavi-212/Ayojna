@@ -187,6 +187,10 @@ class Twin:
                     "retrieval_cost": retrieval,
                     "move_cost": move_cost + early_fee,
                     "hot_share": float(np.mean(placement == HOT)),
+                    # I/O accounting for the KPI report (hit ratio, I/O-weighted SLA)
+                    "ios": float(total),
+                    "hot_ios": float(ios_h[placement == HOT].sum()),
+                    "sla_ios": float(ios_h[latency <= self.sla_target_ms].sum()),
                     "hot_over_capacity": bool(
                         np.sum(placement == HOT) > self.capacity_extents[HOT]
                     ),

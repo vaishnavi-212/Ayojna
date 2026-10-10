@@ -88,7 +88,8 @@ def test_ayojna_beats_baselines_and_stays_compliant(tmp_path):
     path = train(tr).save(store)
     (store / LATEST).write_text(json.dumps({"file": path.name}))
     s = evaluate(eh, feats, str(store))
-    best_baseline = s.drop(index=["ayojna", "all_hot"])["monthly_cost"].min()
+    rules = s.drop(index=["ayojna", "all_hot"])
+    best_baseline = rules[rules["compliance_pct"] >= 100 - 1e-9]["monthly_cost"].min()  # fair: compliant
     assert s.loc["ayojna", "monthly_cost"] < best_baseline
     assert s.loc["ayojna", "compliance_pct"] == pytest.approx(100)
     assert s.loc["ayojna", "hours_over_hot_capacity"] == 0

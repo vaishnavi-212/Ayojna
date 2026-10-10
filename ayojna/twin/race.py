@@ -11,12 +11,22 @@ import pandas as pd
 
 from ayojna.io import read_table, write_table
 from ayojna.twin.sim import Twin, load_twin_config
-from ayojna.twin.strategies import AccessTimer, AgeRule, AllHot, LruCapacity
+from ayojna.twin.strategies import (
+    AccessTimer,
+    AgeRule,
+    AllHot,
+    LfuCapacity,
+    LruCapacity,
+    PolicyAware,
+)
 
 
 def default_strategies() -> list:
     cfg = load_twin_config()["strategies"]
-    return [AllHot(), AgeRule(**cfg["age_rule"]), AccessTimer(**cfg["access_timer"]), LruCapacity()]
+    lfu = cfg.get("lfu", {})
+    return [AllHot(), AgeRule(**cfg["age_rule"]), AccessTimer(**cfg["access_timer"]),
+            LruCapacity(), LfuCapacity(**lfu),
+            PolicyAware(LruCapacity()), PolicyAware(LfuCapacity(**lfu))]  # fmt: skip
 
 
 def summarize(metrics: pd.DataFrame, hours_per_month: float) -> pd.DataFrame:

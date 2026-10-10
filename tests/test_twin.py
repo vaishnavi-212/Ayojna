@@ -94,7 +94,8 @@ def test_race_on_synthetic_traces(tmp_path):
     generate(tmp_path / "raw", days=4, seed=5)
     eh = build(tmp_path / "raw", tmp_path / "eh.csv")
     metrics, summary = race(eh)
-    assert set(summary.index) == {"all_hot", "age_rule", "access_timer", "lru"}
+    assert set(summary.index) == {"all_hot", "age_rule", "access_timer", "lru", "lfu",
+                                  "lru+policy", "lfu+policy"}  # fmt: skip
     assert summary.loc["all_hot", "saving_vs_all_hot_pct"] == pytest.approx(0)
     assert summary.loc["access_timer", "monthly_cost"] < summary.loc["all_hot", "monthly_cost"]
     assert np.isfinite(metrics["p95_latency_ms"]).all()
