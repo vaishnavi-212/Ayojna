@@ -196,6 +196,12 @@ class Service:
         rep = _json(self.lake / "kpi_report.json")
         return {"available": True, **rep} if rep else {"available": False}
 
+    def validation(self) -> dict:
+        """Generalization (unseen volumes / datasets) and robustness (median of N replays)."""
+        gen = _json(self.lake / "generalization.json")
+        rob = _json(self.lake / "robustness.json")
+        return {"available": bool(gen or rob), "generalization": gen or [], "robustness": rob}
+
     # ---------- intelligence layer (hotness | forecast | anomaly) ----------
     def intel(self) -> dict:
         live = _json(self.state / "last_intel.json")  # written every cycle by the supervisor

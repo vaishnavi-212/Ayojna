@@ -97,6 +97,10 @@
     <div id="kpiBox" class="muted">no report yet</div>
     <div class="muted" style="margin-top:6px">Live metrics for Grafana: <a href="/metrics" style="color:var(--cold)">/metrics</a> (Prometheus format) · Grafana on port 3000 after <code>docker compose up -d prometheus grafana</code></div>
   </section>
+  <section class="card"><h2>Generalization &amp; robustness <span class="muted">· run python -m ayojna.validate.generalize / .robustness</span></h2>
+    <div id="robBox" class="muted">no robustness run yet</div>
+    <div id="genBox" class="muted" style="margin-top:8px">no generalization run yet</div>
+  </section>
   <section class="grid2">
     <div class="card"><h2>Monthly cost by strategy (digital twin, unseen hours)</h2><canvas id="costChart"></canvas></div>
     <div class="card"><h2>Cumulative cost over the scored hours</h2><canvas id="cumChart"></canvas></div>
@@ -325,6 +329,19 @@ function scorecard(r) {
     row([x.kpi, x.target, x.value, el("td", x.status, x.status === "PASS" ? "risk-low" : x.status === "MISS" ? "flag" : "muted"), x.note]))));
 }
 
+function cut(p) { const c = p.cut_vs_best_compliant_rule_pct; return c == null ? "-" : `${Math.abs(c)}% ${c >= 0 ? "cheaper" : "dearer"} than ${p.best_compliant_rule}`; }
+function validation(v) {
+  if (!v.available) return;
+  const r = v.robustness, f = s => `${s.median} (${s.min}-${s.max})`;
+  if (r) document.getElementById("robBox").replaceChildren(el("div", `Median of ${r.runs} replays (min-max): ` +
+    `saving vs all-hot ${f(r.saving_vs_all_hot_pct)}% · vs best compliant rule ${f(r.cut_vs_best_compliant_rule_pct)}% · ` +
+    `SLA ${f(r.sla_met_pct)}% · GB moved ${f(r.gb_moved)}`));
+  if (v.generalization.length) document.getElementById("genBox").replaceChildren(table(
+    ["experiment", "tested on (unseen)", "hotness F1 (rule)", "saving vs all-hot", "vs best compliant rule", "SLA"],
+    v.generalization.map(g => row([g.experiment, g.test_volumes.join(", "), `${g.hotness.ml_macro_f1} (${g.hotness.rule_macro_f1})`,
+      `${g.planner.saving_vs_all_hot_pct}%`, cut(g.planner), `${g.planner.sla_met_pct}%`]))));
+}
+
 let SAFE_ON = false;
 function central(c) {
   if (!c.available) return;
@@ -395,6 +412,7 @@ async function refresh() {
     get("/api/decision").then(decisionLayer).catch(() => {});
     get("/api/central").then(central).catch(() => {});
     get("/api/kpi-report").then(scorecard).catch(() => {});
+    get("/api/validation").then(validation).catch(() => {});
   } catch (err) { document.getElementById("leader").textContent = "API unreachable: " + err; }
 }
 const EXAMPLES = ["How much are we saving?", "Why is web_0/3 on warm?", "Any rollbacks?", "Who is the leader?", "Policy for src1_2?", "Show the plan"];

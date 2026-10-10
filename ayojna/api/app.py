@@ -70,6 +70,10 @@ def create_app(state_dir: str | Path | None = None, lake_dir: str | Path | None 
     def kpi_report():
         return svc.kpi_report()
 
+    @api.get("/api/validation")
+    def validation():
+        return svc.validation()
+
     @api.get("/api/central")
     def central():
         return svc.central()
