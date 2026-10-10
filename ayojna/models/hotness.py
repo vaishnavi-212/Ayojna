@@ -1,10 +1,16 @@
 """ML hotness model: predicts hot / warm / cold for the next 24 hours.
 
-Model: scikit-learn HistGradientBoostingClassifier, gradient-boosted trees
-built the same way as LightGBM (histogram-based splits), with balanced class
-weights. Reasons: for each prediction, which features pushed it there, found by
-replacing one feature at a time with its typical value and measuring how much
-the predicted probability drops.
+Algorithms (a model zoo; train_hotness picks the champion on a validation window):
+  lightgbm       LightGBM gradient-boosted trees          (pip install lightgbm)
+  xgboost        XGBoost gradient-boosted trees           (pip install xgboost)
+  random_forest  scikit-learn RandomForest
+  hist_gb        scikit-learn HistGradientBoosting (LightGBM-style histogram trees)
+A library that is not installed is skipped, never a crash. All use balanced class weights.
+
+Reasons ("why"), per prediction:
+  LightGBM / XGBoost -> exact TreeSHAP values computed by the library itself
+  other models       -> occlusion: replace one feature with its typical value, measure the drop
+Either way each driver has a signed effect: + pushed toward the prediction, - against it.
 """
 
 from __future__ import annotations
@@ -17,7 +23,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.utils.class_weight import compute_sample_weight
 
 from ayojna.contracts import Tier
 from ayojna.models.features import FEATURE_COLUMNS, KEYS
@@ -42,12 +49,17 @@ READABLE = {
 
 @dataclass
 class HotnessModel:
-    estimator: HistGradientBoostingClassifier
+    estimator: object  # any classifier with predict_proba and classes_
     features: list[str]
     typical: dict  # median of each feature in training data (used for reasons)
     spread: dict  # spread (IQR) of each feature in training data (used for reasons)
     version: str
     metrics: dict = field(default_factory=dict)
+    algo: str = "hist_gb"
+
+    @property
+    def explainer(self) -> str:
+        return "treeshap" if self.algo in TREESHAP else "occlusion"
 
     # ---------- prediction ----------
     def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
@@ -77,21 +89,21 @@ class HotnessModel:
     def explain(
         self, df: pd.DataFrame, p: np.ndarray, idx: np.ndarray, top_k: int = 3
     ) -> tuple[list[str], list[str]]:
-        """Per-prediction explanation by occlusion (a local, SHAP-style attribution).
+        """Per-prediction drivers: TreeSHAP when the library offers it, else occlusion.
 
-        effect of a feature = confidence in the predicted class minus the confidence when that
-        feature alone is set to its typical (median) training value. Positive = pushed toward
-        the prediction, negative = pushed against it. Returns (reasons text, drivers JSON).
+        Positive effect = pushed toward the prediction, negative = against it.
+        Returns (reasons text, drivers JSON).
         """
         x = df[self.features].to_numpy(dtype=float)
         rows = np.arange(len(x))
-        base = p[rows, idx]
-        order = [list(self.estimator.classes_).index(c) for c in CLASSES]
-        effect = np.zeros((len(x), len(self.features)))
-        for j, name in enumerate(self.features):
-            xj = x.copy()
-            xj[:, j] = self.typical[name]
-            effect[:, j] = base - self.estimator.predict_proba(xj)[:, order][rows, idx]
+        effect = None
+        if self.algo in TREESHAP:
+            try:
+                effect = _treeshap(self.estimator, self.algo, x, idx)
+            except Exception:  # never lose a prediction over its explanation
+                effect = None
+        if effect is None:
+            effect = self._occlusion(x, p, idx)
         typical = np.array([self.typical[f] for f in self.features])
         spread = np.array([self.spread[f] for f in self.features])
         unusual = np.abs(x - typical) / spread
@@ -122,6 +134,18 @@ class HotnessModel:
             )
         return reasons, drivers
 
+    def _occlusion(self, x: np.ndarray, p: np.ndarray, idx: np.ndarray) -> np.ndarray:
+        """Confidence in the predicted class minus the confidence with one feature set typical."""
+        rows = np.arange(len(x))
+        base = p[rows, idx]
+        order = [list(self.estimator.classes_).index(c) for c in CLASSES]
+        effect = np.zeros((len(x), len(self.features)))
+        for j, name in enumerate(self.features):
+            xj = x.copy()
+            xj[:, j] = self.typical[name]
+            effect[:, j] = base - self.estimator.predict_proba(xj)[:, order][rows, idx]
+        return effect
+
     def reasons(self, df: pd.DataFrame, p: np.ndarray, idx: np.ndarray, top_k: int = 3):
         """Readable top reasons only (kept for callers that do not need drivers)."""
         return self.explain(df, p, idx, top_k)[0]
@@ -134,7 +158,13 @@ class HotnessModel:
         joblib.dump(self, path)
         (folder / f"hotness-{self.version}.json").write_text(
             json.dumps(
-                {"version": self.version, "features": self.features, "metrics": self.metrics},
+                {
+                    "version": self.version,
+                    "algo": self.algo,
+                    "explainer": self.explainer,
+                    "features": self.features,
+                    "metrics": self.metrics,
+                },
                 indent=2,
             )
         )
@@ -148,20 +178,84 @@ class HotnessModel:
         return model
 
 
-def train(train_df: pd.DataFrame, seed: int = 7) -> HotnessModel:
+class Encoded:
+    """XGBoost wants labels 0..K-1: this wrapper keeps the string labels for everyone else."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def fit(self, x, y, sample_weight=None):
+        self.classes_ = np.array(sorted(set(y)))
+        codes = np.searchsorted(self.classes_, y)
+        self.inner.fit(x, codes, sample_weight=sample_weight)
+        return self
+
+    def predict_proba(self, x):
+        return self.inner.predict_proba(x)
+
+
+ALGOS = ("lightgbm", "xgboost", "random_forest", "hist_gb")
+TREESHAP = ("lightgbm", "xgboost")
+
+
+def make_estimator(algo: str, seed: int = 7):
+    """Unfitted classifier for `algo`. Raises ImportError if its library is not installed."""
+    if algo == "lightgbm":
+        from lightgbm import LGBMClassifier
+
+        return LGBMClassifier(
+            n_estimators=300, learning_rate=0.05, num_leaves=31, min_child_samples=40,
+            subsample=0.8, subsample_freq=1, colsample_bytree=0.9,
+            class_weight="balanced", random_state=seed, n_jobs=-1, verbose=-1,
+        )  # fmt: skip
+    if algo == "xgboost":
+        from xgboost import XGBClassifier
+
+        return Encoded(
+            XGBClassifier(
+                n_estimators=300, learning_rate=0.08, max_depth=6, subsample=0.8,
+                colsample_bytree=0.9, tree_method="hist", random_state=seed, n_jobs=-1,
+            )
+        )  # fmt: skip
+    if algo == "random_forest":
+        return RandomForestClassifier(
+            n_estimators=150, max_depth=14, min_samples_leaf=20, max_features="sqrt",
+            class_weight="balanced_subsample", random_state=seed, n_jobs=-1,
+        )  # fmt: skip
+    if algo == "hist_gb":
+        return HistGradientBoostingClassifier(
+            max_iter=300, learning_rate=0.08, max_leaf_nodes=31, class_weight="balanced",
+            early_stopping=True, validation_fraction=0.15, random_state=seed,
+        )  # fmt: skip
+    raise ValueError(f"unknown algorithm {algo!r}; choose from {ALGOS}")
+
+
+def _treeshap(est, algo: str, x: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Exact TreeSHAP of the predicted class (log-odds units), computed by LightGBM/XGBoost."""
+    pos = [list(est.classes_).index(c) for c in CLASSES]  # CLASSES index -> estimator column
+    k = np.array(pos)[idx]  # estimator class column of each row's prediction
+    n, f = x.shape
+    if algo == "lightgbm":
+        raw = np.asarray(est.booster_.predict(x, pred_contrib=True))  # (n, (f+1)*classes)
+        contrib = raw.reshape(n, -1, f + 1)
+    else:
+        import xgboost
+
+        raw = est.inner.get_booster().predict(xgboost.DMatrix(x), pred_contribs=True)
+        contrib = np.asarray(raw).reshape(n, -1, f + 1)  # (n, classes, f+1)
+    return contrib[np.arange(n), k, :f]  # drop the bias column
+
+
+def train(train_df: pd.DataFrame, seed: int = 7, algo: str = "hist_gb") -> HotnessModel:
     data = train_df[train_df["label"].notna()]
     if data["label"].nunique() < 2:
         raise ValueError("training data has fewer than 2 classes: replay more trace hours")
-    est = HistGradientBoostingClassifier(
-        max_iter=300,
-        learning_rate=0.08,
-        max_leaf_nodes=31,
-        class_weight="balanced",
-        early_stopping=True,
-        validation_fraction=0.15,
-        random_state=seed,
-    )
-    est.fit(data[FEATURE_COLUMNS].to_numpy(dtype=float), data["label"].to_numpy())
+    est = make_estimator(algo, seed)
+    x, y = data[FEATURE_COLUMNS].to_numpy(dtype=float), data["label"].to_numpy()
+    if algo == "xgboost":  # no class_weight option: balance with sample weights
+        est.fit(x, y, sample_weight=compute_sample_weight("balanced", y))
+    else:
+        est.fit(x, y)
     # every class must be present, otherwise CLASSES order cannot be built
     for c in CLASSES:
         if c not in est.classes_:
@@ -174,4 +268,4 @@ def train(train_df: pd.DataFrame, seed: int = 7) -> HotnessModel:
         c: float(iqr[c]) if iqr[c] > 0 else (float(std[c]) if std[c] > 0 else 1.0)
         for c in FEATURE_COLUMNS
     }
-    return HotnessModel(est, list(FEATURE_COLUMNS), typical, spread, version)
+    return HotnessModel(est, list(FEATURE_COLUMNS), typical, spread, version, algo=algo)

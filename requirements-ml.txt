@@ -1,0 +1,9 @@
+# Optional ML libraries for the intelligence layer (Step 10).
+# Every one is optional: if it is missing, Ayojna uses its fallback and says so.
+# Install them ONE BY ONE so a failure in one does not block the others:
+#   pip install lightgbm      (macOS: run "brew install libomp" first)
+#   pip install xgboost       (macOS: needs libomp too)
+#   pip install prophet
+lightgbm>=4.3
+xgboost>=2.0
+prophet>=1.1.5

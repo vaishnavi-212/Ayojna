@@ -175,6 +175,20 @@ def volume_extent_hourly(src: Source, start_ts: int, chunksize: int = CHUNK) -> 
     return validate_frame(g, EXTENT_HOURLY_COLUMNS, "extent_hourly")
 
 
+def common_window(table: pd.DataFrame) -> pd.DataFrame:
+    """Keep only the hours where EVERY volume was being traced.
+
+    Traces do not all stop at the same time (MSR: ts_0 runs ~26 h longer than the rest).
+    After a trace stops, its volume would look idle, which flatters every tiering policy
+    and mislabels its extents as cold. So the replay ends where the shortest trace ends.
+    """
+    end = int(table.groupby("volume")["hour"].max().min())
+    dropped = int((table["hour"] > end).sum())
+    if dropped:
+        print(f"common window: hours 0-{end} ({dropped:,} rows after a trace ended removed)")
+    return table[table["hour"] <= end]
+
+
 def build_real(
     raw_dir: str | Path,
     out_path: str | Path,
@@ -204,7 +218,7 @@ def build_real(
         )
         tables.append(t)
     table = pd.concat(tables, ignore_index=True).sort_values(["volume", "extent_id", "hour"])
-    table = table.reset_index(drop=True)
+    table = common_window(table).reset_index(drop=True)
     write_table(table, out_path)
     print(
         f"\nextent_hourly: {len(table):,} rows, {table['volume'].nunique()} volumes, "

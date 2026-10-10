@@ -52,6 +52,17 @@ class TierEconomics:
         )
 
 
+def expected_ios(p_hot, p_warm, rate: dict, acc_24h) -> np.ndarray:
+    """Expected I/Os per hour of each extent over the planning horizon.
+
+    The class forecast (P(hot) x rate of a typical hot extent + P(warm) x warm rate) is never
+    allowed below the extent's OWN rate over the last 24 h: a "hot" extent doing 6,000 I/Os
+    an hour must not be priced as an average hot extent, or a slow tier's queue overflows.
+    """
+    lam = np.asarray(p_hot) * rate.get("hot", 0.0) + np.asarray(p_warm) * rate.get("warm", 0.0)
+    return np.maximum(lam, np.asarray(acc_24h, dtype=float) / 24.0)
+
+
 def cost_breakdown(
     expected_ios: np.ndarray,
     read_gb_per_io: np.ndarray,

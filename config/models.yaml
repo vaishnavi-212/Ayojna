@@ -5,3 +5,19 @@ labels:
                          # 1..49 = warm, 0 = cold
 split:
   test_hours: 24         # the last N labelled hours are the test set (never trained on)
+
+# The three models of the intelligence layer (slide 4). Each has a fallback.
+hotness:
+  # model zoo: every candidate is trained, the champion is chosen on a validation window
+  # (never on the test set). A library that is not installed is skipped.
+  candidates: [lightgbm, xgboost, random_forest, hist_gb]
+forecast:
+  model: prophet         # prophet | seasonal_ewma | naive  (prophet falls back to seasonal_ewma)
+  horizon_hours: 24
+  backtest_origins: 3    # MAPE measured on the last 3 days, each forecast made from the past only
+  spike_ratio: 1.5       # next 24 h >= 1.5 x last 24 h ...
+  spike_min_io: 1000     # ... and >= 1000 I/Os -> spike predicted: hold demotions on that volume
+  race_refit_every: 6    # in the replay, re-forecast every 6 hours
+anomaly:
+  contamination: 0.02    # Isolation Forest: about 2% of normal hours look unusual
+  z_max: 6.0             # rule fallback: a feature 6+ robust SDs from the volume's normal
