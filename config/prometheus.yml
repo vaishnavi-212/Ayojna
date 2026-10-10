@@ -1,0 +1,8 @@
+# Prometheus scrapes the Ayojna API (python -m uvicorn ayojna.api.app:app --port 8000).
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: ayojna
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]   # the API runs on your laptop, not in Docker

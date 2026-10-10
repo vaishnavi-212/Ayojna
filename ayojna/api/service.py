@@ -172,7 +172,10 @@ class Service:
         board, place, cycle = self.scoreboard(), self.placement(), self.last_cycle()
         ay = next((r for r in board.get("summary", []) if r["strategy"] == "ayojna"), None)
         rules = [r for r in board.get("summary", []) if r["strategy"] not in ("ayojna", "all_hot")]
-        best = min(rules, key=lambda r: r["monthly_cost"]) if rules else None
+        # fair: a rule that breaks policy is not a cheaper alternative, it is a violation
+        fair = [r for r in rules if r["compliance_pct"] >= 100 - 1e-9 and ay
+                and r["sla_met_pct"] <= ay["sla_met_pct"]] or rules  # fmt: skip
+        best = min(fair, key=lambda r: r["monthly_cost"]) if fair else None
         return {
             "twin_saving_vs_all_hot_pct": ay["saving_vs_all_hot_pct"] if ay else None,
             "twin_saving_vs_best_rule_pct": (
@@ -188,6 +191,11 @@ class Service:
             "moves_last_cycle": cycle["moves_done"] if cycle else None,
         }
     
+    def kpi_report(self) -> dict:
+        """Slide 6 scorecard written by `python -m ayojna.validate.kpi_report`."""
+        rep = _json(self.lake / "kpi_report.json")
+        return {"available": True, **rep} if rep else {"available": False}
+
     # ---------- intelligence layer (hotness | forecast | anomaly) ----------
     def intel(self) -> dict:
         live = _json(self.state / "last_intel.json")  # written every cycle by the supervisor

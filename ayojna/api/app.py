@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from ayojna.api import metrics as prom
 from ayojna.api.service import Service
 from ayojna.copilot.copilot import ask
 from ayojna.copilot.llm import config_from_env
@@ -60,6 +61,14 @@ def create_app(state_dir: str | Path | None = None, lake_dir: str | Path | None 
     @api.get("/api/scoreboard")
     def scoreboard():
         return svc.scoreboard()
+
+    @api.get("/metrics", include_in_schema=False)
+    def metrics():
+        return PlainTextResponse(prom.render(svc), media_type="text/plain; version=0.0.4")
+
+    @api.get("/api/kpi-report")
+    def kpi_report():
+        return svc.kpi_report()
 
     @api.get("/api/central")
     def central():

@@ -93,6 +93,10 @@
     </div>
     <div class="btns" style="margin-top:10px"><button id="safeBtn" class="btn-no">Enter safe mode (L4)</button><span id="safeNote" class="muted"></span></div>
   </section>
+  <section class="card"><h2>Slide 6 scorecard <span id="kpiMeta" class="muted">· run python -m ayojna.validate.kpi_report</span></h2>
+    <div id="kpiBox" class="muted">no report yet</div>
+    <div class="muted" style="margin-top:6px">Live metrics for Grafana: <a href="/metrics" style="color:var(--cold)">/metrics</a> (Prometheus format) · Grafana on port 3000 after <code>docker compose up -d prometheus grafana</code></div>
+  </section>
   <section class="grid2">
     <div class="card"><h2>Monthly cost by strategy (digital twin, unseen hours)</h2><canvas id="costChart"></canvas></div>
     <div class="card"><h2>Cumulative cost over the scored hours</h2><canvas id="cumChart"></canvas></div>
@@ -313,6 +317,14 @@ function intel(d) {
     + (rg && rg.anomaly_pause_volume_hours !== undefined ? `  In the replay: ${rg.anomaly_pause_volume_hours} anomaly-pause and ${rg.spike_hold_volume_hours} spike-hold volume-hours.` : "");
 }
 
+function scorecard(r) {
+  if (!r.available) return;
+  document.getElementById("kpiMeta").textContent = `· ${r.passed} of ${r.measured} measured targets met · unseen hours ${r.scored_hours.join("-")}`;
+  const box = document.getElementById("kpiBox");
+  box.replaceChildren(table(["measure", "target", "Ayojna", "verdict", "note"], r.rows.map(x =>
+    row([x.kpi, x.target, x.value, el("td", x.status, x.status === "PASS" ? "risk-low" : x.status === "MISS" ? "flag" : "muted"), x.note]))));
+}
+
 let SAFE_ON = false;
 function central(c) {
   if (!c.available) return;
@@ -382,6 +394,7 @@ async function refresh() {
     kpis(k); status(s); placement(p); recommendations(rc); execution(x); audit(a); intel(i);
     get("/api/decision").then(decisionLayer).catch(() => {});
     get("/api/central").then(central).catch(() => {});
+    get("/api/kpi-report").then(scorecard).catch(() => {});
   } catch (err) { document.getElementById("leader").textContent = "API unreachable: " + err; }
 }
 const EXAMPLES = ["How much are we saving?", "Why is web_0/3 on warm?", "Any rollbacks?", "Who is the leader?", "Policy for src1_2?", "Show the plan"];

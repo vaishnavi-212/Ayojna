@@ -16,5 +16,20 @@ services:
     command: ["run", "--server", "--addr", ":8181", "--disable-telemetry", "/policy/policy.rego"]
     ports: ["8181:8181"]
     volumes: ["./config:/policy:ro"]
+  prometheus:       # scrapes the API's /metrics (start the API on port 8000 first)
+    image: prom/prometheus:v2.53.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    ports: ["9090:9090"]
+    volumes: ["./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  grafana:          # live KPI dashboard, provisioned from config/grafana (open http://localhost:3000)
+    image: grafana/grafana:11.1.0
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me-please}
+    volumes: ["./config/grafana:/etc/grafana/provisioning:ro"]
+    depends_on: [prometheus]
 volumes:
   minio-data:
