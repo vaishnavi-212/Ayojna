@@ -54,10 +54,18 @@ def kpi_report(eh: pd.DataFrame, feats: pd.DataFrame, store: str, state: str, la
         cut = 100 * (1 - ay["monthly_cost"] / fair.loc[best, "monthly_cost"])
         raw = rules["monthly_cost"].idxmin()
         raw_cut = 100 * (1 - ay["monthly_cost"] / rules.loc[raw, "monthly_cost"])
+        note = (f"vs {raw} ignoring policy ({rules.loc[raw, 'compliance_pct']:.1f}% "
+                f"compliant): {raw_cut:+.1f}%")  # fmt: skip
+        rob = _json(Path(lake) / "robustness.json")
+        if rob:  # judge on the median of several replays, not one (possibly lucky) run
+            c = rob["cut_vs_best_compliant_rule_pct"]
+            value, ok = f"{c['median']:.1f}% lower than {best} (median of {rob['runs']})", c["median"] >= 15
+            note = f"range {c['min']}-{c['max']}% over {rob['runs']} replays; this run {cut:.1f}%; " + note
+        else:
+            value, ok = f"{cut:.1f}% lower than {best}", cut >= 15
+            note = "one replay (run validate.robustness for the median); " + note
         rows.append(_row("Storage cost vs best rule", ">= 15% lower at equal or better SLA",
-                         f"{cut:.1f}% lower than {best}", cut >= 15,
-                         f"vs {raw} ignoring policy ({rules.loc[raw, 'compliance_pct']:.1f}% "
-                         f"compliant): {raw_cut:+.1f}%"))  # fmt: skip
+                         value, ok, note))  # fmt: skip
     # 2. SLA, weighted by I/O (every I/O counts once)
     rows.append(_row("Performance SLA", ">= 99% of I/Os within latency target",
                      f"{io_sla['ayojna']:.2f}%", io_sla["ayojna"] >= 99,
