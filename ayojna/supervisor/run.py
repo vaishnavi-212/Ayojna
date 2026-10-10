@@ -3,7 +3,7 @@
     python -m ayojna.supervisor.run --name primary --cycles 3
     python -m ayojna.supervisor.run --name replica --cycles 3     # in a second terminal
 
-Demo faults:  --fail hotness  |  --slow features  |  --crash-after features
+Demo faults:  --fail hotness|forecast|anomaly  |  --slow features  |  --crash-after features
 Executor:     --store-kind minio  |  --recommend-only  |  --corrupt-move  |  --crash-after-moves 20
 """
 
@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 
 from ayojna.supervisor.pipeline import build_steps
-from ayojna.supervisor.runner import run_cycle
+from ayojna.supervisor.runner import Parallel, run_cycle
 from ayojna.supervisor.state import StateStore
 
 
@@ -45,10 +45,12 @@ def main(a) -> None:
         crash_after_moves=a.crash_after_moves,
         approval_mode=a.approval,
     )
-    if a.crash_after:  # crash right after this step's checkpoint is saved
-        i = [s.name for s in steps].index(a.crash_after)
+    if a.crash_after:  # crash right after this step's (or group's) checkpoint is saved
+        names = [[s.name, *[m.name for m in getattr(s, "steps", [])]] for s in steps]
+        i = next(k for k, n in enumerate(names) if a.crash_after in n)
         if i + 1 < len(steps):
-            steps[i + 1].fn = lambda ctx: os._exit(1)
+            nxt = steps[i + 1]
+            (nxt.steps[0] if isinstance(nxt, Parallel) else nxt).fn = lambda ctx: os._exit(1)
     done = 0
     while done < a.cycles:
         token = store.acquire(a.name)
@@ -67,7 +69,11 @@ def main(a) -> None:
             stop.set()
         for name, info in report["steps"].items():
             tag = " (resumed from checkpoint)" if info.get("resumed") else ""
-            print(f"    {name:<9} {info['source']:<9} {info['note'][:70]}{tag}")
+            ms = f"{info.get('ms', 0):>6} ms" if "ms" in info else " " * 9
+            print(f"    {name:<9} {info['source']:<9}{ms}  {info['note'][:60]}{tag}")
+        for g, t in report.get("groups", {}).items():
+            print(f"    [{g}] {' | '.join(t['steps'])} in parallel: "
+                  f"{t['wall_ms']} ms wall vs {t['sum_ms']} ms one after another")  # fmt: skip
         out = report["outputs"]
         ex = out.get("execute") or {}
         if ex.get("mode") == "recommend-only" and report["level"] != "L3":

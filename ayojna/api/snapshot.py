@@ -21,6 +21,7 @@ def snapshot(eh_path: str, features_path: str, store: str, out: str) -> dict:
     board = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "predictions": note,
+        "guards": summary.attrs.get("guards", {}),
         "scored_hours": [int(scored["hour"].min()), int(scored["hour"].max())],
         "summary": summary.round(4).reset_index().to_dict(orient="records"),
         "cumulative_cost": {
@@ -46,4 +47,5 @@ if __name__ == "__main__":
             f"{row['strategy']:<13} ${row['monthly_cost']:>7.3f}/month  "
             f"saving {row['saving_vs_all_hot_pct']:>5.1f}%  SLA {row['sla_met_pct']:.2f}%"
         )
+    print(f"guards in the replay: {b['guards']}")
     print(f"-> {a.out}")

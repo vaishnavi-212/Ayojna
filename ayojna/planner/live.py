@@ -4,7 +4,7 @@ Same economics as the twin strategy (planner/strategy.py), but for ONE hour and 
 real placement from the catalog. Besides the plan it returns, for every move:
   why   - one line for tables ("I/Os in the last 72 h = 0; pii: no archive")
   cards - the full decision trace the recommendation view shows, stage by stage:
-          prediction (probabilities + feature drivers) -> policy -> cost per tier -> decision
+          prediction (probabilities + feature drivers) -> policy + guards -> cost per tier -> decision
 """
 
 from __future__ import annotations
@@ -15,10 +15,12 @@ import numpy as np
 import pandas as pd
 
 from ayojna.contracts import TIER_ORDER, Envelope, Move, MovePlan
+from ayojna.planner.guards import NONE, apply_guards
 from ayojna.planner.optimizer import (
     GB,
     TierEconomics,
     cost_breakdown,
+    expected_ios,
     load_planner_config,
     plan,
 )
@@ -33,7 +35,7 @@ def expected_load(twin: Twin, preds: pd.DataFrame, feats: pd.DataFrame, abstain_
     # learned from labelled history: average I/Os per hour of a hot / warm extent
     rate = (feats.dropna(subset=["label"]).groupby("label")["future_acc"].mean() / 24).to_dict()
     cols = ["volume", "extent_id", "hour"]
-    df = preds.merge(feats[cols + ["avg_io_size_24h", "read_ratio_24h"]], on=cols)
+    df = preds.merge(feats[cols + ["avg_io_size_24h", "read_ratio_24h", "acc_24h"]], on=cols)
     col = pd.DataFrame(
         {"volume": twin.volumes, "extent_id": twin.extent_ids, "col": np.arange(twin.n_extents)}
     )
@@ -42,7 +44,7 @@ def expected_load(twin: Twin, preds: pd.DataFrame, feats: pd.DataFrame, abstain_
     rgb = np.zeros(twin.n_extents)
     conf = np.ones(twin.n_extents, dtype=bool)  # never-touched extents: surely idle
     c = df["col"].to_numpy()
-    exp[c] = df["p_hot"] * rate.get("hot", 0) + df["p_warm"] * rate.get("warm", 0)
+    exp[c] = expected_ios(df["p_hot"], df["p_warm"], rate, df["acc_24h"])
     rgb[c] = df["avg_io_size_24h"] * df["read_ratio_24h"] / 1e9
     conf[c] = df["confidence"] >= abstain_below
     if "drivers" not in df:
@@ -75,11 +77,13 @@ def live_plan(
     current: np.ndarray,
     since: np.ndarray,
     envelope: Envelope,
+    guards: dict | None = None,
 ) -> tuple[MovePlan, dict[str, str], dict[str, dict]]:
     cfg = load_planner_config()
     hour, H = int(preds["hour"].max()), cfg["horizon_hours"]
     exp, rgb, conf, pred = expected_load(twin, preds, feats, cfg["abstain_below"])
     allowed, policy = allowed_tiers(twin.volumes, current)
+    allowed, guard_note = apply_guards(allowed, current, twin.volumes, guards or NONE)
     eco = TierEconomics.from_twin(twin)
     held = hour - since
     choice = plan(exp, rgb, twin.sla_target_ms, current, held, allowed, conf, eco, cfg)
@@ -104,7 +108,7 @@ def live_plan(
         )
         moves.append(m)
         key = m.idempotency_key(envelope.run_id)
-        notes[key] = "; ".join(x for x in (p["reasons"], policy[i]) if x)
+        notes[key] = "; ".join(x for x in (p["reasons"], policy[i], guard_note[i]) if x)
         options = {
             TIERS[k]: (
                 {
@@ -128,6 +132,7 @@ def live_plan(
             "policy": {
                 "allowed": [TIERS[k] for k in range(4) if allowed[i, k]],
                 "rules": policy[i] or "no restrictions",
+                "guard": guard_note[i] or None,
             },
             "costs_24h": options,
             "decision": {

@@ -60,6 +60,7 @@ def build(saved_plan: dict, last_exec: dict | None, approvals: dict) -> dict:
         conf = sum(c["prediction"]["confidence"] for c in cs) / len(cs) if cs else None
         done = sum(status_of.get(k) == "done" for k in g["keys"])
         rules = cs[0]["policy"]["rules"] if cs else ""
+        guard = cs[0]["policy"].get("guard") if cs else None
         verb = _verb(g["from"], g["to"])
         out.append(
             {
@@ -76,6 +77,7 @@ def build(saved_plan: dict, last_exec: dict | None, approvals: dict) -> dict:
                 "confidence": round(conf, 3) if conf is not None else None,
                 "risk": g["risk"],
                 "policy": rules,
+                "guard": guard,
                 "drivers": _top_drivers(cs),
                 "reason": why.get(g["keys"][0], ""),
                 "status": decision_for(approvals, g["id"]),

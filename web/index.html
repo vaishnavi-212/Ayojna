@@ -49,6 +49,11 @@
   .drv { display:grid; grid-template-columns:1fr 70px; gap:6px; align-items:center; font-size:12px; }
   .tierchip { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; margin:0 4px 4px 0; border:1px solid var(--line); }
   .tierchip.no { text-decoration:line-through; opacity:.5; } .chosen td { background:#123d2c; }
+  .mods { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+  .mod { border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; overflow:auto; }
+  .mod h3 { margin:0 0 6px; font-size:13px; } .mod table { font-size:12px; } .mod th, .mod td { padding:4px 6px; }
+  .flag { color:var(--hot); font-weight:600; } .champ td { background:#123d2c; }
+  .src.primary { background:#123d2c; color:var(--ok); } .src.fallback { background:#4a3712; color:var(--warm); } .src.failed { background:#4a1717; color:var(--hot); }
   @media (max-width:600px) { header, main { padding-left:16px; padding-right:16px; } }
 </style>
 </head>
@@ -63,6 +68,15 @@
     <div id="recSummary" class="muted">waiting for the first plan...</div>
     <div id="recs"></div>
     <div id="traceBox"></div>
+  </section>
+  <section class="card"><h2>Intelligence layer <span id="intelMeta" class="muted">· hotness | forecast | anomaly, run in parallel by the supervisor</span></h2>
+    <div id="intelSteps" class="facts"></div>
+    <div class="mods" style="margin-top:12px">
+      <div class="mod"><h3>1 · Hotness model zoo</h3><div id="hotBox" class="muted">run python -m ayojna.models.train_all</div></div>
+      <div class="mod"><h3>2 · Capacity &amp; I/O forecast (next 24 h)</h3><div id="fcBox" class="muted">waiting for a cycle...</div></div>
+      <div class="mod"><h3>3 · Anomaly guard (this hour)</h3><div id="anBox" class="muted">waiting for a cycle...</div></div>
+    </div>
+    <div id="guardBox" class="muted" style="margin-top:10px"></div>
   </section>
   <section class="grid2">
     <div class="card"><h2>Monthly cost by strategy (digital twin, unseen hours)</h2><canvas id="costChart"></canvas></div>
@@ -171,6 +185,7 @@ function recommendations(r) {
     fact("confidence", it.confidence === null ? "-" : Math.round(it.confidence * 100) + "%");
     fact("risk", it.risk, "risk-" + it.risk);
     fact("policy", it.policy || "no restrictions");
+    if (it.guard) fact("guard", it.guard, "risk-med");
     const drivers = el("div", undefined, "facts");
     drivers.append("drivers:");
     (it.drivers.length ? it.drivers : [{ feature: it.reason || "never accessed", effect: null }])
@@ -208,12 +223,13 @@ async function trace(it) {
     [["hot", p.p_hot], ["warm", p.p_warm], ["cold", p.p_cold]].forEach(([k, v]) => { s1.append(el("div", `${k} ${Math.round(v * 100)}%`, "muted")); s1.appendChild(bar(v, TIER_COLOR[k])); });
     s1.append(el("div", `predicted ${p.label} · confidence ${Math.round(p.confidence * 100)}% · expected ${c.expected_ios_per_hour} I/Os per hour`, "muted"));
     if (p.drivers.length) {
-      s1.append(el("div", "What drove it (effect on confidence):", "muted"));
+      s1.append(el("div", "What drove it (+ toward this prediction, − against):", "muted"));
       p.drivers.forEach(dv => { const r = el("div", undefined, "drv"); const cell = el("div"); cell.append(el("div", `${dv.feature} = ${dv.value}`), bar(dv.effect, dv.effect >= 0 ? "var(--ok)" : "var(--hot)", dv.effect >= 0 ? 50 : 50 - Math.min(1, Math.abs(dv.effect)) * 50, 50)); r.append(cell, el("span", (dv.effect > 0 ? "+" : "") + dv.effect)); s1.appendChild(r); });
     } else s1.append(el("div", p.reasons, "muted"));
-    const s2 = st("2 · Policy guard");
+    const s2 = st("2 · Policy + guards");
     ["hot", "warm", "cold", "archive"].forEach(t => s2.appendChild(el("span", t, "tierchip" + (c.policy.allowed.includes(t) ? "" : " no"))));
     s2.append(el("div", c.policy.rules, "muted"));
+    if (c.policy.guard) s2.append(el("div", c.policy.guard, "risk-med"));
     const s3 = st("3 · Cost over 24 h");
     const t = el("table"); t.appendChild(row(["tier", "storage", "retrieval", "SLA risk", "move", "total"].map(h => el("th", h))));
     Object.entries(c.costs_24h).forEach(([tier, k]) => {
@@ -232,6 +248,56 @@ async function trace(it) {
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+function table(head, rows) {
+  const t = el("table"); t.appendChild(row(head.map(h => el("th", h))));
+  rows.forEach(r => t.appendChild(r instanceof Node ? r : row(r))); return t;
+}
+const num = v => (v === null || v === undefined) ? "-" : Math.round(v).toLocaleString();
+
+function intel(d) {
+  if (!d.available) return;
+  const live = d.live || {}, rep = d.report || {};
+  const steps = document.getElementById("intelSteps"); steps.replaceChildren();
+  ["hotness", "forecast", "anomaly"].forEach(n => {
+    const s = (live.steps || {})[n]; if (!s) return;
+    const f = el("span"); f.append(el("span", s.source, "src " + s.source), el("b", n), ` ${s.ms ?? "-"} ms ${s.note ? "· " + s.note : ""}`); steps.appendChild(f);
+  });
+  const g = (live.parallel || {}).models;
+  if (g) steps.append(el("span", `in parallel: ${g.wall_ms} ms wall vs ${g.sum_ms} ms one after another`));
+
+  const hb = document.getElementById("hotBox"), h = rep.hotness;
+  if (h) {
+    hb.replaceChildren(table(["model", "val F1", "test F1", "hot recall", "train s"], h.board.map(r => {
+      const tr = r.status === "ok" ? row([r.model, fmt(r.val_f1, 3), fmt(r.test_f1, 3), fmt(r.hot_recall, 3), fmt(r.train_s, 1)]) : row([r.model, r.status, "", "", ""]);
+      if (r.model === h.champion) tr.className = "champ"; return tr;
+    })));
+    hb.append(el("div", `champion ${h.champion} (chosen on validation hours ${h.windows.validation.join("-")}; test hours ${h.windows.test.join("-")} never used to choose) · ${h.promoted ? "promoted" : "NOT promoted: rule fallback"} · reasons by ${h.explainer === "treeshap" ? "TreeSHAP" : "occlusion"} · live: ${live.hotness_model || "-"}`, "muted"));
+  }
+
+  const fb = document.getElementById("fcBox");
+  if (live.forecast && live.forecast.length) {
+    fb.replaceChildren(table(["volume", "I/O last 24 h", "next 24 h", "×", "working set GB", "spike"], live.forecast.map(r =>
+      row([r.volume, num(r.io_last24), num(r.io_next24), fmt(r.io_ratio, 2), `${fmt(r.ws_gb_last24, 2)} → ${fmt(r.ws_gb_next24, 2)}`, r.spike ? el("td", "yes: hold demotions", "flag") : "no"]))));
+    const b = (rep.forecast || {}).board || {};
+    const line = Object.entries(b).map(([m, r]) => r.status === "not installed" ? `${m}: not installed` : `${m}: MAPE I/O ${r.mape_io_pct}% · capacity ${r.mape_capacity_pct}%`).join("  |  ");
+    fb.append(el("div", `model ${live.forecast[0].model} · backtest (last ${(Object.values(b)[0] || {}).origins || "-"} days, past-only): ${line || "run train_all"}`, "muted"));
+  }
+
+  const ab = document.getElementById("anBox");
+  if (live.anomaly && live.anomaly.length) {
+    ab.replaceChildren(table(["volume", "score", "flag", "most unusual"], live.anomaly.map(r =>
+      row([r.volume, fmt(r.score, 3), r.anomaly ? el("td", "PAUSE", "flag") : "ok", r.reason]))));
+    const m = rep.anomaly;
+    if (m) ab.append(el("div", `${live.anomaly[0].method} · learned normal on hours ${m.train_hours.join("-")} · later hours flagged ${fmt(100 * m.scored_flag_rate, 1)}%`, "muted"));
+  }
+
+  const gb = document.getElementById("guardBox"), gd = live.guards || { freeze: {}, no_demote: {} };
+  const acts = [...Object.entries(gd.freeze).map(([v, w]) => `${v}: ${w}`), ...Object.entries(gd.no_demote).map(([v, w]) => `${v}: ${w}`)];
+  const rg = d.replay_guards;
+  gb.textContent = (acts.length ? "Guards active this cycle → " + acts.join(" · ") + "." : "No guard active this cycle: every volume behaves normally and no spike is forecast.")
+    + (rg && rg.anomaly_pause_volume_hours !== undefined ? `  In the replay: ${rg.anomaly_pause_volume_hours} anomaly-pause and ${rg.spike_hold_volume_hours} spike-hold volume-hours.` : "");
+}
+
 function audit(list) {
   const body = document.getElementById("audit"); body.replaceChildren();
   list.forEach(e => {
@@ -243,8 +309,8 @@ function audit(list) {
 
 async function refresh() {
   try {
-    const [k, s, p, rc, x, a] = await Promise.all(["/api/kpis", "/api/status", "/api/placement", "/api/recommendations", "/api/execution", "/api/audit?limit=30"].map(get));
-    kpis(k); status(s); placement(p); recommendations(rc); execution(x); audit(a);
+    const [k, s, p, rc, x, a, i] = await Promise.all(["/api/kpis", "/api/status", "/api/placement", "/api/recommendations", "/api/execution", "/api/audit?limit=30", "/api/intel"].map(get));
+    kpis(k); status(s); placement(p); recommendations(rc); execution(x); audit(a); intel(i);
   } catch (err) { document.getElementById("leader").textContent = "API unreachable: " + err; }
 }
 const EXAMPLES = ["How much are we saving?", "Why is web_0/3 on warm?", "Any rollbacks?", "Who is the leader?", "Policy for src1_2?", "Show the plan"];

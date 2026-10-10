@@ -176,6 +176,15 @@ class Service:
             "moves_last_cycle": cycle["moves_done"] if cycle else None,
         }
     
+    # ---------- intelligence layer (hotness | forecast | anomaly) ----------
+    def intel(self) -> dict:
+        live = _json(self.state / "last_intel.json")  # written every cycle by the supervisor
+        report = _json(self.lake / "intel_report.json")  # written by models.train_all
+        if not live and not report:
+            return {"available": False}
+        board = _json(self.lake / "scoreboard.json") or {}
+        return {"available": True, "live": live, "report": report, "replay_guards": board.get("guards")}
+
     # ---------- recommendation engine ----------
     def recommendations(self) -> dict:
         saved = _json(self.state / "last_plan.json")

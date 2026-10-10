@@ -1,9 +1,11 @@
 """The hourly decision cycle as supervised steps:
 
-    load -> features -> hotness -> plan (policy guard + optimizer) -> execute (saga)
+    load -> features -> [hotness | forecast | anomaly] -> plan -> execute (saga)
+                         the three models run in parallel
 
 Each step has a fallback so the cycle degrades instead of breaking:
-features -> last good file, hotness -> rule model, plan -> hold (no moves),
+features -> last good file, hotness -> rule model, forecast -> seasonal model (then no
+spike guard), anomaly -> robust-z rule (then no pause), plan -> hold (no moves),
 execute -> keep the plan as a recommendation only.
 """
 
@@ -19,13 +21,16 @@ from ayojna.executor.catalog import Catalog
 from ayojna.executor.saga import Executor
 from ayojna.executor.tierstore import make_store
 from ayojna.io import atomic_write_text, read_table
+from ayojna.models.anomaly import detect
 from ayojna.models.features import build_features, load_label_config
+from ayojna.models.forecast import forecast_volumes
 from ayojna.models.predictor import predict_hotness
+from ayojna.planner.guards import guards_from
 from ayojna.planner.live import live_plan
 from ayojna.planner.optimizer import load_planner_config
 from ayojna.recommend.approvals import decision_for, load_approvals
 from ayojna.settings import CONFIG_DIR
-from ayojna.supervisor.runner import Degraded, Step
+from ayojna.supervisor.runner import Degraded, Parallel, Step
 from ayojna.supervisor.state import StateStore
 from ayojna.twin.sim import Twin
 
@@ -65,9 +70,10 @@ def build_steps(
     corrupt_first_move: bool = False,
     crash_after_moves: int | None = None,
     approval_mode: bool = False,
-) -> list[Step]:
+) -> list:
     faults = faults or {}
-    labels = load_label_config()["labels"]
+    mcfg = load_label_config()
+    labels, fc, an = mcfg["labels"], mcfg["forecast"], mcfg["anomaly"]
     state = StateStore(state_dir)
     catalog_path = state.root / "catalog.json"
 
@@ -89,6 +95,36 @@ def build_steps(
         pred.attrs["model_version"] = note
         return Degraded(pred, note) if source == Source.FALLBACK else pred
 
+    def forecast(ctx):
+        rows = forecast_volumes(ctx["load"], fc["model"], fc["horizon_hours"],
+                                fc["spike_ratio"], fc["spike_min_io"])  # fmt: skip
+        if fc["model"] != "seasonal_ewma" and not rows["model"].eq(fc["model"]).all():
+            return Degraded(rows, f"{fc['model']} unavailable: seasonal_ewma used")
+        return rows
+
+    def anomaly(ctx):
+        rows, note, degraded = detect(ctx["load"], model_store, an["z_max"])
+        return Degraded(rows, note) if degraded else rows
+
+    def no_guard(ctx):  # model down: plan without this guard (the level shows L1)
+        return Degraded(None, "model unavailable: guard off this cycle")
+
+    def intel_report(ctx, guards: dict) -> None:
+        f, a = ctx.get("forecast"), ctx.get("anomaly")
+        _write_json(
+            state.root / "last_intel.json",
+            {
+                "run_id": ctx["run_id"],
+                "hour": int(ctx["hotness"]["hour"].max()),
+                "hotness_model": ctx["hotness"].attrs.get("model_version", "unknown"),
+                "forecast": [] if f is None else f.to_dict(orient="records"),
+                "anomaly": [] if a is None else a.to_dict(orient="records"),
+                "guards": guards,
+                "steps": {k: dict(v) for k, v in ctx.get("_steps", {}).items()},
+                "parallel": dict(ctx.get("_groups", {})),
+            },
+        )
+
     def envelope(ctx, status=Status.OK, source=Source.PRIMARY):
         return Envelope(
             run_id=ctx["run_id"],
@@ -107,7 +143,11 @@ def build_steps(
         catalog = Catalog(catalog_path)
         catalog.seed(twin.volumes, twin.extent_ids, make_store(store_kind, tiers_root), hour)
         current, since = catalog.placement(twin.volumes, twin.extent_ids)
-        mp, why, cards = live_plan(twin, preds, ctx["features"], current, since, envelope(ctx))
+        guards = guards_from(ctx.get("forecast"), ctx.get("anomaly"))
+        intel_report(ctx, guards)
+        mp, why, cards = live_plan(
+            twin, preds, ctx["features"], current, since, envelope(ctx), guards
+        )
         _write_json(
             state.root / "last_plan.json",
             {"plan": mp.model_dump(mode="json"), "why": why, "cards": cards},
@@ -156,7 +196,16 @@ def build_steps(
     return [
         Step("load", wrap("load", load), timeout_s),
         Step("features", wrap("features", features), timeout_s, fallback=features_fallback),
-        Step("hotness", wrap("hotness", hotness), timeout_s),
+        Parallel(
+            "models",
+            [
+                Step("hotness", wrap("hotness", hotness), timeout_s),
+                Step("forecast", wrap("forecast", forecast), timeout_s, fallback=no_guard,
+                     critical=False),
+                Step("anomaly", wrap("anomaly", anomaly), timeout_s, fallback=no_guard,
+                     critical=False),
+            ],
+        ),  # fmt: skip
         Step("plan", wrap("plan", plan), timeout_s, fallback=plan_fallback),
         Step("execute", wrap("execute", execute), timeout_s, fallback=execute_fallback),
     ]

@@ -42,6 +42,7 @@ def results_table() -> str:
     h0, h1 = board["scored_hours"]
     lines = [
         f"Scored on unseen hours {h0}-{h1}; predictions: {board['predictions']}",
+        f"Guards in the replay: {board.get('guards', {})}",
         "",
         "| Strategy | $/month | Saving vs all-hot | SLA met | Compliance | GB moved "
         "| Over hot cap (h) |",
@@ -79,8 +80,9 @@ def main(a) -> None:
     print("\n== 2/6 features ==")
     run("ayojna.models.build_features", "--inp", EH, "--out", FEATS)
 
-    print("\n== 3/6 hotness model ==")
-    if not run("ayojna.models.train_hotness", "--features", FEATS, "--store", STORE, check=False):
+    print("\n== 3/6 intelligence layer: hotness model zoo + forecast + anomaly ==")
+    if not run("ayojna.models.train_all", "--eh", EH, "--features", FEATS, "--store", STORE,
+               "--report", f"{LAKE}/intel_report.json", check=False):  # fmt: skip
         (REPO_ROOT / STORE / "hotness-latest.json").unlink(missing_ok=True)
         print("model not trained on this data -> the supervisor will use the rule fallback (L1)")
 
