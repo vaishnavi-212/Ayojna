@@ -20,7 +20,7 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; min-width:0; }
   .kpi b { display:block; font-size:28px; margin-top:4px; } .kpi small { color:var(--muted); }
   .badge { padding:4px 10px; border-radius:999px; font-weight:700; font-size:13px; background:var(--line); }
-  .L0 { background:#123d2c; color:var(--ok); } .L1,.L2 { background:#4a3712; color:var(--warm); } .L3 { background:#4a1717; color:var(--hot); }
+  .L0 { background:#123d2c; color:var(--ok); } .L1,.L2 { background:#4a3712; color:var(--warm); } .L3, .L4 { background:#4a1717; color:var(--hot); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; }
@@ -85,6 +85,14 @@
       <div class="mod"><h3>3 · Contextual bandit (RL)</h3><div id="rlBox" class="muted">run the scoreboard (snapshot) to train it</div></div>
     </div>
   </section>
+  <section class="card"><h2>Central layer <span class="muted">· supervisor + hot replica · shared state · fail-safe levels</span></h2>
+    <div class="mods">
+      <div class="mod"><h3>Leader &amp; shared state</h3><div id="leadBox" class="muted">waiting for a supervisor...</div></div>
+      <div class="mod"><h3>Failover &amp; availability</h3><div id="foBox" class="muted">no cycle yet</div></div>
+      <div class="mod"><h3>Dead-letter queue</h3><div id="dlqBox" class="muted">empty</div></div>
+    </div>
+    <div class="btns" style="margin-top:10px"><button id="safeBtn" class="btn-no">Enter safe mode (L4)</button><span id="safeNote" class="muted"></span></div>
+  </section>
   <section class="grid2">
     <div class="card"><h2>Monthly cost by strategy (digital twin, unseen hours)</h2><canvas id="costChart"></canvas></div>
     <div class="card"><h2>Cumulative cost over the scored hours</h2><canvas id="cumChart"></canvas></div>
@@ -130,7 +138,7 @@ function status(s) {
   const lv = document.getElementById("level");
   lv.textContent = s.level ? "Level " + s.level : "No cycle yet"; lv.className = "badge " + (s.level || "");
   document.getElementById("leader").textContent = s.leader
-    ? `leader ${s.leader} · token ${s.fencing_token} · ${s.leader_alive ? "lease " + s.lease_seconds_left + "s" : "lease expired"}` : "";
+    ? `leader ${s.leader} · token ${s.fencing_token} · ${s.store} · ${s.leader_alive ? "lease " + s.lease_seconds_left + "s" : "lease expired"}` + (s.l4_reason ? " · " + s.l4_reason : "") : "";
 }
 
 function scoreboard(b) {
@@ -305,6 +313,34 @@ function intel(d) {
     + (rg && rg.anomaly_pause_volume_hours !== undefined ? `  In the replay: ${rg.anomaly_pause_volume_hours} anomaly-pause and ${rg.spike_hold_volume_hours} spike-hold volume-hours.` : "");
 }
 
+let SAFE_ON = false;
+function central(c) {
+  if (!c.available) return;
+  const s = c.status, lb = document.getElementById("leadBox");
+  lb.replaceChildren(
+    el("div", s.leader ? `leader ${s.leader} · fencing token ${s.fencing_token}` : "no leader yet"),
+    el("div", `shared state: ${s.store === "redis" ? "Redis (lease, checkpoints, audit, DLQ)" : "files (Redis not running)"}`, "muted"),
+    el("div", s.leader_alive ? `lease renews every few seconds · ${s.lease_seconds_left} s left` : "lease expired", s.leader_alive ? "muted" : "flag"));
+  if (s.level === "L4") lb.append(el("div", "L4 SAFE MODE · " + s.l4_reason, "flag"));
+  const f = c.failover, cy = c.cycles, fb = document.getElementById("foBox");
+  fb.replaceChildren(el("div", f.last ? `last failover: ${f.last.from} → ${f.last.to} in ${f.last.gap_s} s (target ≤ ${f.target_s} s)` + (f.last.resumed_run ? " · resumed the run from its checkpoint" : "") : "no failover yet (start a replica, then stop the leader)"));
+  if (f.count) fb.append(el("div", `${f.count} failovers · worst ${f.max_gap_s} s`, f.max_gap_s <= f.target_s ? "muted" : "flag"));
+  if (cy.total) fb.append(el("div", `${cy.total} cycles · ${cy.completed_pct}% completed without a hold · by level: ${Object.entries(cy.by_level).map(([k, v]) => `${k} ${v}`).join(", ")}`, "muted"));
+  const db = document.getElementById("dlqBox"), q = c.dlq;
+  if (q.count) {
+    db.replaceChildren(el("div", `${q.count} item(s) kept for a person to inspect or replay`, "risk-med"));
+    db.append(table(["time", "what", "error", "handled by"], q.recent.map(x => [new Date(x.ts * 1000).toLocaleTimeString(), x.kind === "step" ? "step " + x.step : "move " + (x.key || ""), (x.error || x.note || "").slice(0, 80), x.handled_by || x.status || ""])));
+  } else db.textContent = "empty: nothing has failed for good";
+  SAFE_ON = !!s.safe_mode;
+  document.getElementById("safeBtn").textContent = SAFE_ON ? "Leave safe mode" : "Enter safe mode (L4)";
+  document.getElementById("safeNote").textContent = SAFE_ON ? " operator safe mode is ON: cycles plan but nothing moves" : " operator kill switch: cycles keep planning, nothing moves";
+}
+document.getElementById("safeBtn").onclick = async () => {
+  const reason = SAFE_ON ? "" : (prompt("Reason for safe mode?", "maintenance") || "");
+  await fetch("/api/safe-mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !SAFE_ON, reason }) });
+  refresh();
+};
+
 function decisionLayer(d) {
   if (!d.available) return;
   const pb = document.getElementById("polBox"), p = d.policy;
@@ -345,6 +381,7 @@ async function refresh() {
     const [k, s, p, rc, x, a, i] = await Promise.all(["/api/kpis", "/api/status", "/api/placement", "/api/recommendations", "/api/execution", "/api/audit?limit=30", "/api/intel"].map(get));
     kpis(k); status(s); placement(p); recommendations(rc); execution(x); audit(a); intel(i);
     get("/api/decision").then(decisionLayer).catch(() => {});
+    get("/api/central").then(central).catch(() => {});
   } catch (err) { document.getElementById("leader").textContent = "API unreachable: " + err; }
 }
 const EXAMPLES = ["How much are we saving?", "Why is web_0/3 on warm?", "Any rollbacks?", "Who is the leader?", "Policy for src1_2?", "Show the plan"];

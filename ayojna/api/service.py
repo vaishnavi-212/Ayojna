@@ -24,6 +24,7 @@ from ayojna.recommend.approvals import load_approvals, set_decision
 from ayojna.settings import load_config
 
 GB = EXTENT_MB / 1024
+L4_GRACE_S = 5.0  # a lease this long past its expiry = no supervisor alive
 TIERS = [t.value for t in TIER_ORDER]
 
 
@@ -62,14 +63,24 @@ class Service:
         lease = _json(self.state / "lease.json")
         cycle = self.last_cycle()
         now = time.time()
+        level, why = (cycle["level"] if cycle else None), None
+        safe = _json(self.state / "safe_mode.json") or {}
+        if safe.get("on"):
+            level, why = "L4", f"operator safe mode: {safe.get('reason') or 'no reason given'}"
+        elif lease and lease["expires"] + L4_GRACE_S < now:
+            level = "L4"
+            why = f"no supervisor alive for {now - lease['expires']:.0f} s: read-only, nothing moves"
         return {
+            "l4_reason": why,
+            "safe_mode": safe if safe.get("on") else None,
+            "store": (lease or {}).get("store", "file"),
             "available": lease is not None,
             "leader": lease["owner"] if lease else None,
             "fencing_token": lease["token"] if lease else None,
             "leader_alive": bool(lease and lease["expires"] > now),
             "lease_seconds_left": round(max(0.0, lease["expires"] - now), 1) if lease else 0,
             "active_run": (_json(self.state / "active.json") or {}).get("run_id"),
-            "level": cycle["level"] if cycle else None,
+            "level": level,
             "last_cycle": cycle,
         }
 
@@ -173,7 +184,7 @@ class Service:
             "sla_met_pct": ay["sla_met_pct"] if ay else None,
             "compliance_pct": ay["compliance_pct"] if ay else None,
             "live_saving_pct": place.get("saving_pct"),
-            "level": cycle["level"] if cycle else None,
+            "level": self.status()["level"],
             "moves_last_cycle": cycle["moves_done"] if cycle else None,
         }
     
@@ -185,6 +196,46 @@ class Service:
             return {"available": False}
         board = _json(self.lake / "scoreboard.json") or {}
         return {"available": True, "live": live, "report": report, "replay_guards": board.get("guards")}
+
+    # ---------- central layer (supervisor, replica, shared state) ----------
+    def central(self) -> dict:
+        st = self.status()
+        events = _tail(self.state / "audit.jsonl", 20000)
+        failovers = [e for e in events if e.get("event") == "failover"]
+        cycles = [e for e in events if e.get("event") == "cycle"]
+        held = sum(e.get("level") == "L3" for e in cycles)
+        by_level: dict = {}
+        for e in cycles:
+            by_level[e.get("level")] = by_level.get(e.get("level"), 0) + 1
+        dlq_path = self.state / "dlq.jsonl"
+        dlq_count = sum(1 for x in dlq_path.open(encoding="utf-8") if x.strip()) if dlq_path.exists() else 0
+        gaps = [f["gap_s"] for f in failovers if "gap_s" in f]
+        return {
+            "available": st["available"] or bool(cycles),
+            "status": st,
+            "failover": {
+                "count": len(failovers),
+                "last": failovers[0] if failovers else None,  # _tail is newest first
+                "max_gap_s": max(gaps) if gaps else None,
+                "target_s": 10,
+            },
+            "cycles": {
+                "total": len(cycles),
+                "held_L3": held,
+                "completed_pct": round(100 * (1 - held / len(cycles)), 2) if cycles else None,
+                "by_level": by_level,
+            },
+            "dlq": {"count": dlq_count, "recent": _tail(dlq_path, 10)},
+        }
+
+    def set_safe_mode(self, on: bool, reason: str = "") -> dict:
+        """Operator kill switch (L4): the next cycles plan but move nothing until it is off."""
+        flag = {"on": bool(on), "reason": reason, "since": time.time()}
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "safe_mode.json").write_text(json.dumps(flag), encoding="utf-8")
+        with open(self.state / "audit.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": flag["since"], "event": "safe_mode", **flag}) + "\n")
+        return flag
 
     # ---------- decision layer (policy -> optimizer -> RL bandit) ----------
     def decision(self) -> dict:

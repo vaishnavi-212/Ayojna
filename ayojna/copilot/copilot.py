@@ -35,6 +35,7 @@ LEVELS = {
     "L1": "degraded: a fallback was used (e.g. rule model instead of ML)",
     "L2": "recommend-only: the plan is shown to people, nothing moves",
     "L3": "hold: a critical step failed, so nothing moves this cycle",
+    "L4": "safe mode: no supervisor is in charge (or an operator switched it on); read-only, nothing moves",
 }
 SYSTEM = (
     "You are the Ayojna storage-tiering copilot. Answer the operator's question using ONLY "

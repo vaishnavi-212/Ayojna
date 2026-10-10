@@ -28,6 +28,11 @@ class Question(BaseModel):
 
 
 
+class SafeMode(BaseModel):
+    on: bool
+    reason: str = Field(default="", max_length=200)
+
+
 class Decision(BaseModel):
     group: str = Field(min_length=3, max_length=80)
     decision: Literal["approved", "rejected"]
@@ -55,6 +60,14 @@ def create_app(state_dir: str | Path | None = None, lake_dir: str | Path | None 
     @api.get("/api/scoreboard")
     def scoreboard():
         return svc.scoreboard()
+
+    @api.get("/api/central")
+    def central():
+        return svc.central()
+
+    @api.post("/api/safe-mode")
+    def safe_mode(s: SafeMode):
+        return svc.set_safe_mode(s.on, s.reason)
 
     @api.get("/api/decision")
     def decision():
