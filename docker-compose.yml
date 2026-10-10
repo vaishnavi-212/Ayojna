@@ -11,5 +11,10 @@ services:
   redis:            # supervisor state: lease, checkpoints, result store
     image: redis:7-alpine
     ports: ["6379:6379"]
+  opa:              # policy engine: evaluates config/policy.rego (slide 4: "OPA · fails closed")
+    image: openpolicyagent/opa:1.4.2
+    command: ["run", "--server", "--addr", ":8181", "--disable-telemetry", "/policy/policy.rego"]
+    ports: ["8181:8181"]
+    volumes: ["./config:/policy:ro"]
 volumes:
   minio-data:

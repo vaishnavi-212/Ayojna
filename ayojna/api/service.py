@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from ayojna.contracts import EXTENT_MB, TIER_ORDER
+from ayojna.policy import guard
 from ayojna.policy.guard import allowed_tiers
 from ayojna.recommend import engine
 from ayojna.recommend.approvals import load_approvals, set_decision
@@ -184,6 +185,20 @@ class Service:
             return {"available": False}
         board = _json(self.lake / "scoreboard.json") or {}
         return {"available": True, "live": live, "report": report, "replay_guards": board.get("guards")}
+
+    # ---------- decision layer (policy -> optimizer -> RL bandit) ----------
+    def decision(self) -> dict:
+        saved = _json(self.state / "last_plan.json") or {}
+        board = _json(self.lake / "scoreboard.json") or {}
+        cat = _json(self.state / "catalog.json") or {}
+        volumes = sorted({k.split("/")[0] for k in cat}) or sorted(load_config().volumes)
+        decisions, report = guard.decide(volumes)  # asks the policy engine right now
+        return {
+            "available": True,
+            "policy": {**report, "volumes": decisions},
+            "live": saved.get("decision"),  # solver + bandit of the last supervisor cycle
+            "replay": board.get("decision"),  # solver + bandit over the whole replay
+        }
 
     # ---------- recommendation engine ----------
     def recommendations(self) -> dict:

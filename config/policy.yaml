@@ -1,7 +1,15 @@
 # Compliance rules, applied BEFORE the optimizer. Tier order: hot, warm, cold, archive.
+# The rules themselves are in config/policy.rego (OPA) and ayojna/policy/guard.py (Python).
 legal_hold_freezes: true          # data under legal hold never moves
 no_archive_classes: [financial, pii]  # must stay quickly retrievable for audits and data requests
 sla_floor:                        # slowest tier allowed for each SLA class
   oltp: warm
   general: cold
   backup: archive
+
+# Which engine decides (env AYOJNA_POLICY_ENGINE overrides the mode):
+#   local = Python only | opa = OPA, frozen if it cannot answer | auto = OPA if reachable
+engine:
+  mode: auto
+  opa_url: http://localhost:8181
+  timeout_s: 2

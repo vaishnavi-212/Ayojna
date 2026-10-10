@@ -56,6 +56,10 @@ def create_app(state_dir: str | Path | None = None, lake_dir: str | Path | None 
     def scoreboard():
         return svc.scoreboard()
 
+    @api.get("/api/decision")
+    def decision():
+        return svc.decision()
+
     @api.get("/api/intel")
     def intel():
         return svc.intel()

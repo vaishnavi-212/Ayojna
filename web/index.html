@@ -78,6 +78,13 @@
     </div>
     <div id="guardBox" class="muted" style="margin-top:10px"></div>
   </section>
+  <section class="card"><h2>Decision layer <span class="muted">· policy guard → exact optimizer → RL bandit</span></h2>
+    <div class="mods">
+      <div class="mod"><h3>1 · Policy engine</h3><div id="polBox" class="muted">waiting...</div></div>
+      <div class="mod"><h3>2 · Exact optimizer</h3><div id="solBox" class="muted">waiting for a cycle...</div></div>
+      <div class="mod"><h3>3 · Contextual bandit (RL)</h3><div id="rlBox" class="muted">run the scoreboard (snapshot) to train it</div></div>
+    </div>
+  </section>
   <section class="grid2">
     <div class="card"><h2>Monthly cost by strategy (digital twin, unseen hours)</h2><canvas id="costChart"></canvas></div>
     <div class="card"><h2>Cumulative cost over the scored hours</h2><canvas id="cumChart"></canvas></div>
@@ -298,6 +305,32 @@ function intel(d) {
     + (rg && rg.anomaly_pause_volume_hours !== undefined ? `  In the replay: ${rg.anomaly_pause_volume_hours} anomaly-pause and ${rg.spike_hold_volume_hours} spike-hold volume-hours.` : "");
 }
 
+function decisionLayer(d) {
+  if (!d.available) return;
+  const pb = document.getElementById("polBox"), p = d.policy;
+  const eng = p.engine === "opa" ? "OPA (Rego) · cross-checked by the Python guard" : p.engine;
+  pb.replaceChildren(el("div", `engine: ${eng} · mode ${p.mode}` + (p.agree === null ? "" : p.agree ? " · engines agree" : ` · DISAGREE on ${p.disagree.join(", ")}: frozen`), p.agree === false ? "flag" : ""));
+  if (p.error) pb.append(el("div", "OPA: " + p.error, "muted"));
+  pb.append(table(["volume", "allowed", "rules"], Object.entries(p.volumes).map(([v, x]) => [v, x.freeze ? el("td", "frozen", "flag") : x.allowed.join(", "), x.reasons.join("; ") || "-"])));
+
+  const sb = document.getElementById("solBox"), s = (d.live || {}).solver, rs = ((d.replay || {}).solver) || {};
+  if (s && s.solver) {
+    const gap = s.greedy_objective !== undefined ? `exact plan costs ${usd(s.greedy_objective - s.objective)} less than the greedy plan (model cost over 24 h, incl. capacity and queue penalties)` : "";
+    sb.replaceChildren(el("div", `last cycle: ${s.solver} · ${s.status} · ${s.ms ?? "-"} ms · ${s.variables ?? "-"} placement variables`), el("div", gap, "muted"));
+    if ((s.fallbacks || []).length) sb.append(el("div", "fell back: " + s.fallbacks.join(" | "), "muted"));
+  }
+  if (rs.used) sb.append(el("div", `replay (unseen hours): ${Object.entries(rs.used).map(([k, v]) => `${k} ${v} h`).join(", ")} · optimal ${rs.optimal_hours} h · mean ${rs.mean_ms} ms · ${fmt(rs.objective_gain_vs_greedy, 4)} $ cheaper than greedy by the model`, "muted"));
+
+  const rb = document.getElementById("rlBox"), b = ((d.replay || {}).bandit), lb = ((d.live || {}).bandit) || {};
+  if (b) {
+    const v = b.validation;
+    rb.replaceChildren(el("div", b.promoted ? "ACTIVE: beat the static settings on the validation day" : "SHADOW MODE: suggests, does not steer (did not beat the static settings on the validation day)", b.promoted ? "" : "risk-med"));
+    rb.append(el("div", `validation hours ${b.validation_hours.join("-")}: static $${fmt(v.static.cost, 4)} vs bandit $${fmt(v.bandit.cost, 4)} · test: static ${fmt(b.test.static.saving_vs_all_hot_pct, 1)}% vs bandit ${fmt(b.test.bandit.saving_vs_all_hot_pct, 1)}% saving`, "muted"));
+    rb.append(table(["arm", "pulls", "mean reward"], Object.entries(b.arms).map(([a, x]) => [a, String(x.pulls), fmt(x.mean_reward, 4)])));
+  }
+  if (lb.suggested) rb.append(el("div", "now suggests: " + Object.entries(lb.suggested).map(([v, a]) => `${v} ${a}`).join(" · "), "muted"));
+}
+
 function audit(list) {
   const body = document.getElementById("audit"); body.replaceChildren();
   list.forEach(e => {
@@ -311,6 +344,7 @@ async function refresh() {
   try {
     const [k, s, p, rc, x, a, i] = await Promise.all(["/api/kpis", "/api/status", "/api/placement", "/api/recommendations", "/api/execution", "/api/audit?limit=30", "/api/intel"].map(get));
     kpis(k); status(s); placement(p); recommendations(rc); execution(x); audit(a); intel(i);
+    get("/api/decision").then(decisionLayer).catch(() => {});
   } catch (err) { document.getElementById("leader").textContent = "API unreachable: " + err; }
 }
 const EXAMPLES = ["How much are we saving?", "Why is web_0/3 on warm?", "Any rollbacks?", "Who is the leader?", "Policy for src1_2?", "Show the plan"];
