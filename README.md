@@ -134,7 +134,7 @@ flowchart LR
 
 | Slide claim | Where it is | How to see it |
 |---|---|---|
-| Hotness prediction, explained | `models/hotness.py`, `models/train_hotness.py` (zoo, champion, TreeSHAP / occlusion) | Dashboard → Intelligence layer |
+| Hotness prediction, explained | `models/hotness.py`, `models/train_hotness.py` (Zoo, champion, TreeSHAP / occlusion) | Dashboard → Intelligence layer |
 | Capacity / I/O forecast | `models/forecast.py` | `python -m ayojna.models.train_all` |
 | Anomaly detection + guards | `models/anomaly.py`, `planner/guards.py` | Dashboard → Intelligence layer |
 | Parallel steps, timeouts, fallbacks | `supervisor/runner.py` (`Parallel`) | `--fail hotness`, `--slow forecast` |
