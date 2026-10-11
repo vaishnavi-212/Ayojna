@@ -50,7 +50,7 @@
 
 ---
 
-## 🔥 The problem
+## 🔥 The Problem
 
 Enterprises keep most of their data on **expensive, fast storage**, although most of it is rarely read. Static rules ("move it after 30 days") are cheap to run but blind: they demote data just before it gets busy, ignore legal holds and never price the cost of moving.
 
